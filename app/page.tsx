@@ -3,13 +3,103 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { fetchWishlistItems, updateItemPurchased } from "@/lib/api";
 import type { WishlistItem } from "@/types/wishlist";
-import { useState, useMemo } from "react";
+import { useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 
 type Tab = "wishlist" | "purchased";
+type ShoppingLink = {
+  href: string;
+  destination: "Google" | "Amazon";
+  item?: WishlistItem;
+};
+
+const shoppingReminderKey = "wishlist-shopping-reminder-acknowledged";
+const sourceLinkClassName = "break-all text-blue-600 underline hover:text-blue-800";
+
+function getSourceLinkUrl(value: string) {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  if (!/^(?:https?:\/\/|www\.)/i.test(text)) return null;
+
+  try {
+    return new URL(/^www\./i.test(text) ? `https://${text}` : text).href;
+  } catch {
+    return null;
+  }
+}
+
+function renderNotes(notes: string, onShoppingLink: (event: MouseEvent<HTMLAnchorElement>) => void) {
+  const parts: ReactNode[] = [];
+  let offset = 0;
+
+  for (const match of notes.matchAll(/\b(?:https?:\/\/|www\.)[^\s<>"“”]+/gi)) {
+    const candidate = match[0];
+    let label = candidate.replace(/[.,!?;:]+$/, "");
+    if (label.endsWith(")") && label.split(")").length > label.split("(").length) {
+      label = label.slice(0, -1);
+    }
+
+    const href = getSourceLinkUrl(label);
+    if (!href) continue;
+
+    parts.push(notes.slice(offset, match.index));
+    parts.push(
+      <a
+        key={match.index}
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={onShoppingLink}
+        onAuxClick={onShoppingLink}
+        className={sourceLinkClassName}
+      >
+        {label}
+      </a>,
+    );
+    offset = match.index + label.length;
+  }
+
+  parts.push(notes.slice(offset));
+  return parts;
+}
+
+function hasAcknowledgedShoppingReminder() {
+  try {
+    return window.localStorage.getItem(shoppingReminderKey) === "true";
+  } catch {
+    return false;
+  }
+}
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<Tab>("wishlist");
+  const [shoppingLink, setShoppingLink] = useState<ShoppingLink | null>(null);
+  const shoppingDialog = useRef<HTMLDialogElement>(null);
+  const acknowledgedShoppingReminder = useRef(false);
   const queryClient = useQueryClient();
+
+  function handleShoppingLink(event: MouseEvent<HTMLAnchorElement>, item?: WishlistItem) {
+    if (event.button > 1 || acknowledgedShoppingReminder.current) return;
+
+    const { href, hostname } = event.currentTarget;
+    const retailer = hostname.match(/(?:^|\.)(google|amazon)\.(?:[a-z]{2,3}|(?:co|com)\.[a-z]{2})$/i)?.[1];
+    if (!retailer || hasAcknowledgedShoppingReminder()) return;
+
+    event.preventDefault();
+    setShoppingLink({ href, destination: retailer === "google" ? "Google" : "Amazon", item });
+    shoppingDialog.current?.showModal();
+  }
+
+  function continueToShoppingLink(event: MouseEvent<HTMLAnchorElement>) {
+    if (event.button > 1) return;
+
+    acknowledgedShoppingReminder.current = true;
+    try {
+      window.localStorage.setItem(shoppingReminderKey, "true");
+    } catch {
+      // The in-memory acknowledgement still applies if browser storage is unavailable.
+    }
+    shoppingDialog.current?.close();
+  }
 
   const { data: items = [], isLoading, error } = useQuery({
     queryKey: ["wishlist"],
@@ -109,6 +199,8 @@ export default function Home() {
             href="https://www.amazon.ca/hz/wishlist/ls/3KL70QY8FQF60?ref_=wl_share"
             target="_blank"
             rel="noopener noreferrer"
+            onClick={handleShoppingLink}
+            onAuxClick={handleShoppingLink}
             className="inline-flex items-center text-sm font-medium text-blue-700 hover:text-blue-800 underline"
           >
             View on Amazon →
@@ -166,6 +258,7 @@ export default function Home() {
                   index={originalIndex}
                   onMarkPurchased={handleMarkPurchased}
                   onMarkUnpurchased={handleMarkUnpurchased}
+                  onShoppingLink={handleShoppingLink}
                   showPurchaseButton={activeTab === "wishlist" && !item.Purchased}
                   showUnpurchaseButton={activeTab === "purchased" && item.Purchased}
                 />
@@ -174,6 +267,51 @@ export default function Home() {
           )}
         </div>
       </div>
+
+      <dialog
+        ref={shoppingDialog}
+        aria-labelledby="shopping-reminder-title"
+        aria-describedby="shopping-reminder-message"
+        className="m-auto max-h-[calc(100%-2rem)] w-[calc(100%-2rem)] max-w-md overflow-y-auto rounded-xl border border-gray-200 bg-white p-6 text-gray-900 shadow-xl backdrop:bg-gray-900/50"
+      >
+        <h2 id="shopping-reminder-title" className="text-xl font-semibold">
+          Double-check before you order
+        </h2>
+        <p id="shopping-reminder-message" className="mt-3 text-sm leading-relaxed text-gray-700">
+          Amazon and Google may show similar products, especially when the requested item
+          is out of stock. Before ordering, check that the product matches the wishlist description.
+          Don't just buy the first 'Sponsered' Amazon item!
+        </p>
+        {shoppingLink?.item && (
+          <div className="mt-4 break-words rounded-md bg-gray-100 p-3 text-sm">
+            <p className="font-semibold">{shoppingLink.item.Idea}</p>
+            {shoppingLink.item.Notes && (
+              <p className="mt-1 whitespace-pre-line text-gray-700">{shoppingLink.item.Notes}</p>
+            )}
+          </div>
+        )}
+        <div className="mt-6 flex flex-wrap justify-end gap-3">
+          <button
+            type="button"
+            onClick={() => shoppingDialog.current?.close()}
+            className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium hover:bg-gray-50"
+          >
+            Back to wishlist
+          </button>
+          {shoppingLink && (
+            <a
+              href={shoppingLink.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={continueToShoppingLink}
+              onAuxClick={continueToShoppingLink}
+              className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+            >
+              Continue to {shoppingLink.destination}
+            </a>
+          )}
+        </div>
+      </dialog>
     </div>
   );
 }
@@ -183,6 +321,7 @@ interface WishlistItemCardProps {
   index: number;
   onMarkPurchased: (index: number) => void;
   onMarkUnpurchased: (index: number) => void;
+  onShoppingLink: (event: MouseEvent<HTMLAnchorElement>, item: WishlistItem) => void;
   showPurchaseButton: boolean;
   showUnpurchaseButton: boolean;
 }
@@ -192,9 +331,13 @@ function WishlistItemCard({
   index,
   onMarkPurchased,
   onMarkUnpurchased,
+  onShoppingLink,
   showPurchaseButton,
   showUnpurchaseButton,
 }: WishlistItemCardProps) {
+  const handleShoppingLink = (event: MouseEvent<HTMLAnchorElement>) => onShoppingLink(event, item);
+  const sourceLink = item.Link ? getSourceLinkUrl(item.Link) : null;
+
   return (
     <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 hover:shadow-md transition-shadow">
       <div className="flex flex-col md:flex-row md:justify-between md:items-start">
@@ -205,7 +348,10 @@ function WishlistItemCard({
               href={`https://www.google.com/search?q=${encodeURIComponent(item.Idea)}`}
               target="_blank"
               rel="noopener noreferrer"
+              onClick={handleShoppingLink}
+              onAuxClick={handleShoppingLink}
               className="text-gray-500 hover:text-gray-700 transition-colors"
+              aria-label="Search on Google"
               title="Search on Google"
             >
               <svg
@@ -227,7 +373,10 @@ function WishlistItemCard({
               href={`https://www.amazon.ca/s?k=${encodeURIComponent(item.Idea)}`}
               target="_blank"
               rel="noopener noreferrer"
+              onClick={handleShoppingLink}
+              onAuxClick={handleShoppingLink}
               className="text-gray-500 hover:text-orange-600 transition-colors"
+              aria-label="Search on Amazon.ca"
               title="Search on Amazon.ca"
             >
               <svg
@@ -247,14 +396,18 @@ function WishlistItemCard({
             </a>
           </div>
           {item.Notes && (
-            <p className="text-sm text-gray-600 mb-3">{item.Notes}</p>
+            <p className="mb-3 whitespace-pre-line text-sm text-gray-600">
+              {renderNotes(String(item.Notes), handleShoppingLink)}
+            </p>
           )}
-          {item.Link && (
+          {sourceLink && (
             <a
-              href={item.Link}
+              href={sourceLink}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-sm text-blue-600 hover:text-blue-800 underline"
+              onClick={handleShoppingLink}
+              onAuxClick={handleShoppingLink}
+              className={`text-sm ${sourceLinkClassName}`}
             >
               View Link
             </a>
