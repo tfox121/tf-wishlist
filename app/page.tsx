@@ -14,6 +14,24 @@ type ShoppingLink = {
 
 const shoppingReminderKey = "wishlist-shopping-reminder-acknowledged";
 const sourceLinkClassName = "break-all text-blue-600 underline hover:text-blue-800";
+const priorityRanks = new Map<string, number>([
+  ["HIGH", 0],
+  ["MEDIUM", 1],
+  ["LOW", 2],
+]);
+
+function getPriorityRank({ Priority }: WishlistItem) {
+  return priorityRanks.get(Priority ?? "") ?? priorityRanks.size;
+}
+
+function shuffleRowIndexes(rowCount: number) {
+  const indexes = Array.from({ length: rowCount }, (_, index) => index);
+  for (let i = indexes.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [indexes[i], indexes[j]] = [indexes[j], indexes[i]];
+  }
+  return indexes;
+}
 
 function getSourceLinkUrl(value: string) {
   if (typeof value !== "string") return null;
@@ -149,24 +167,16 @@ export default function Home() {
     updateMutation.mutate({ index, purchased: false });
   };
 
-  // Fisher-Yates shuffle algorithm
-  const shuffleArray = <T,>(array: T[]): T[] => {
-    const shuffled = [...array];
-    for (let i = shuffled.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-    }
-    return shuffled;
-  };
-
-  // Filter and randomize items
+  const rowCount = items.length;
+  const shuffledIndexes = useMemo(() => shuffleRowIndexes(rowCount), [rowCount]);
   const filteredItems = useMemo(() => {
-    const filtered =
-      activeTab === "wishlist"
-        ? items.filter((item) => !item.Purchased)
-        : items.filter((item) => item.Purchased);
-    return shuffleArray(filtered);
-  }, [items, activeTab]);
+    const showPurchased = activeTab === "purchased";
+    // A stable sort preserves the shuffled order among rows with the same priority.
+    return shuffledIndexes
+      .map((index) => ({ item: items[index], index }))
+      .filter(({ item }) => Boolean(item.Purchased) === showPurchased)
+      .sort((a, b) => getPriorityRank(a.item) - getPriorityRank(b.item));
+  }, [items, activeTab, shuffledIndexes]);
 
   if (isLoading) {
     return (
@@ -248,22 +258,18 @@ export default function Home() {
                 : "No purchased items yet."}
             </div>
           ) : (
-            filteredItems.map((item) => {
-              // Find the original index in the full items array by Idea (since Purchased status may have changed optimistically)
-              const originalIndex = items.findIndex((i) => i.Idea === item.Idea);
-              return (
-                <WishlistItemCard
-                  key={`${item.Idea}-${originalIndex}`}
-                  item={item}
-                  index={originalIndex}
-                  onMarkPurchased={handleMarkPurchased}
-                  onMarkUnpurchased={handleMarkUnpurchased}
-                  onShoppingLink={handleShoppingLink}
-                  showPurchaseButton={activeTab === "wishlist" && !item.Purchased}
-                  showUnpurchaseButton={activeTab === "purchased" && item.Purchased}
-                />
-              );
-            })
+            filteredItems.map(({ item, index }) => (
+              <WishlistItemCard
+                key={`${item.Idea}-${index}`}
+                item={item}
+                index={index}
+                onMarkPurchased={handleMarkPurchased}
+                onMarkUnpurchased={handleMarkUnpurchased}
+                onShoppingLink={handleShoppingLink}
+                showPurchaseButton={activeTab === "wishlist" && !item.Purchased}
+                showUnpurchaseButton={activeTab === "purchased" && item.Purchased}
+              />
+            ))
           )}
         </div>
       </div>

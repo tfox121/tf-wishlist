@@ -3,5 +3,6 @@ export interface WishlistItem {
   Purchased: boolean;
   Link: string;
   Notes: string;
+  Priority?: "HIGH" | "MEDIUM" | "LOW" | "";
 }
 
